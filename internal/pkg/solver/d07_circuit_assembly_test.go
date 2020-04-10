@@ -79,9 +79,8 @@ func TestPuzzleInputPart07B(t *testing.T) {
 			replacement := "16076 -> b"
 			fmt.Printf("REPLACED to '%v' \n", replacement)
 			return replacement
-		} else {
-			return in
 		}
+		return in
 
 	}
 	tData07CalcInputAggregator(t, debug, &c, override)
