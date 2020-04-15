@@ -116,10 +116,10 @@ func traverseCloneSeenMap(seen map[string]bool) map[string]bool {
 	return targetMap
 }
 
-func traverse(city string, dist int, path string,
+func traverse(origin *string, city string, dist int, path string,
 	cityMap *map[string]map[string]*int,
 	routeDeterminator func(int, int) bool,
-	seen map[string]bool, debug bool) (bool, string, int) {
+	seen map[string]bool, returnToStartCity bool, debug bool) (bool, string, int) {
 
 	var targetCityDistances map[string]*int
 	var ok bool
@@ -129,6 +129,13 @@ func traverse(city string, dist int, path string,
 		if traverseHasSeenAll(seen) {
 			if debug {
 				fmt.Printf("\tSeen all: [%v] %v\n", dist, path)
+				if returnToStartCity {
+					distance := *(*cityMap)[city][*origin]
+					path = "==[" + fmt.Sprintf("%v", distance) + "]==>"
+				}
+			}
+			if returnToStartCity {
+				dist = dist + *(*cityMap)[city][*origin]
 			}
 			return true, path, dist
 		}
@@ -168,12 +175,18 @@ func traverse(city string, dist int, path string,
 			continue
 		}
 		if debug {
-			nextPath = path + "->" + targetCity
+			nextPath = path + "==[" + fmt.Sprintf("%v", *targetDistance) + "]==>" + targetCity
 			fmt.Printf("\tTRAVERSING NEXTPATH: %v\n", nextPath)
 		}
 		var td = dist + *targetDistance
-		seenAll, sp, sd := traverse(targetCity, td, nextPath, cityMap,
-			routeDeterminator, traverseCloneSeenMap(seen), debug)
+		originCity := origin
+		if origin == nil {
+			var o = targetCity
+			originCity = &o
+		}
+
+		seenAll, sp, sd := traverse(originCity, targetCity, td, nextPath, cityMap,
+			routeDeterminator, traverseCloneSeenMap(seen), returnToStartCity, debug)
 
 		if seenAll {
 			if bestDistance == 0 || //0 means first finished trip distance
@@ -183,15 +196,13 @@ func traverse(city string, dist int, path string,
 			}
 		}
 	}
-
 	return bestDistance != 0, bestPath, bestDistance
-
 }
 
 func (pc *pathChooser) determinePath(debug bool, routeDeterminator func(int, int) bool) int {
-
 	//Remember, which city you start at can effect path distance
-	_, path, totalDistance := traverse("", 0, "", &pc.distances, routeDeterminator, nil, debug)
+	_, path, totalDistance := traverse(nil, "", 0, "", &pc.distances,
+		routeDeterminator, nil, false, debug)
 	if debug {
 		fmt.Printf("%v\n", path)
 	}
