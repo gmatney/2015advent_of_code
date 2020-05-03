@@ -262,3 +262,28 @@ func TestGivenExamples22Part1B(t *testing.T) {
 	b.applyEffects()
 	t22BossCheck(t, &b, -1)
 }
+
+/*
+You start with 50 hit points and 500 mana points. The boss's actual stats are
+in your puzzle input. What is the least amount of mana you can spend and still
+ win the fight? (Do not include mana recharge effects as "spending" negative mana.)
+*/
+func TestPuzzleInput22Part1(t *testing.T) {
+	debug := false
+	var w = newWizard(50, 500)
+	var b = newBoss(51, 9)
+	expected := 900
+
+	w.loadSpells(&b)
+	spellCount := w.spells
+	if len(spellCount) != 5 {
+		t.Errorf("spellCount wrong, have %v", spellCount)
+	}
+
+	mana := leastManaAndWin(debug, &w, &b)
+	if mana != expected {
+		t.Errorf("leastMana did not match. expected[%v] received[%v]",
+			expected, mana)
+	}
+
+}

@@ -50,8 +50,6 @@ Effects all work the same way. Effects apply at the start of both the player's t
 You start with 50 hit points and 500 mana points. The boss's actual stats are
 in your puzzle input. What is the least amount of mana you can spend and still
  win the fight? (Do not include mana recharge effects as "spending" negative mana.)
-
-
 */
 
 //#############################################################################
@@ -128,14 +126,66 @@ func (w *wizard) spendMana(mana int) {
 	w.mana -= mana
 }
 
+func (w *wizard) loadSpells(b *boss) {
+	var drain = getSpellDrain(b, w)
+	var missle = getSpellMagicMissle(b, w)
+	var poison = getSpellPoison(b, w)
+	var recharge = getSpellRecharge(b, w)
+	var shield = getSpellShield(b, w)
+
+	w.spells = []*ispell{&drain, &missle, &poison, &recharge, &shield}
+}
+
 func newBoss(health int, attackDamage int) boss {
 	return boss{baseCharacterStats: baseCharacterStats{health: health},
 		attackDamage: attackDamage}
 }
 
 func newWizard(health int, mana int) wizard {
-	return wizard{baseCharacterStats: baseCharacterStats{health: health},
+	var wiz = wizard{baseCharacterStats: baseCharacterStats{health: health},
 		mana: mana}
+	return wiz
+}
+
+type gameSave struct {
+	boss       *boss
+	wizz       *wizard
+	bossMemory boss
+	wizzMemory wizard
+}
+
+func newGameState(b *boss, w *wizard) gameSave {
+	return gameSave{b, w, boss{}, wizard{}}
+}
+
+func bossStatReplace(source *boss, target *boss) {
+	target.health = source.health
+	target.effects = []*effect{}
+	for _, e := range source.effects {
+		var clone = (*e).Clone()
+		target.effects = append(target.effects, &clone)
+	}
+}
+
+func wizzStatReplace(source *wizard, target *wizard) {
+	target.armor = source.armor
+	target.health = source.health
+	target.mana = source.mana
+	target.manaSpent = source.manaSpent
+	target.effects = []*effect{}
+	for _, e := range source.effects {
+		var clone = (*e).Clone()
+		target.effects = append(target.effects, &clone)
+	}
+}
+
+func (gs *gameSave) saveState() {
+	bossStatReplace(gs.boss, &gs.bossMemory)
+	wizzStatReplace(gs.wizz, &gs.wizzMemory)
+}
+func (gs *gameSave) revertState() {
+	bossStatReplace(&gs.bossMemory, gs.boss)
+	wizzStatReplace(&gs.wizzMemory, gs.wizz)
 }
 
 //#############################################################################
@@ -152,6 +202,7 @@ type effect interface {
 	GetName() string
 	Affect() bool // apply the effect, if effect over returns true
 	GetTimeLeft() int
+	Clone() effect
 }
 
 type baseEffect struct {
@@ -175,6 +226,17 @@ func (b *baseEffect) validate() {
 	}
 }
 
+func (b *baseEffect) baseEffectClone() baseEffect {
+	return baseEffect{
+		b.name,
+		b.timeLeft,
+		b.initialized,
+		b.enemy,
+		b.caster,
+		b.change,
+	}
+}
+
 // Shield lasts for 6 turns. while it is active, your armor is increased by 7.
 type effectShield struct{ baseEffect }
 
@@ -188,6 +250,10 @@ func (e *effectShield) Affect() bool {
 	return false
 }
 
+func (e *effectShield) Clone() effect {
+	return effect(&effectShield{e.baseEffectClone()})
+}
+
 //Poison costs 173 mana. It starts an effect that lasts for 6 turns.
 //At the start of each turn while it is active, it deals the boss 3 damage.
 type effectPoison struct{ baseEffect }
@@ -199,6 +265,10 @@ func (e *effectPoison) Affect() bool {
 	return e.timeLeft < 1
 }
 
+func (e *effectPoison) Clone() effect {
+	return effect(&effectPoison{e.baseEffectClone()})
+}
+
 //Recharge costs 229 mana. It starts an effect that lasts for 5 turns. At the
 //start of each turn while it is active, it gives you 101 new mana.
 type effectRecharge struct{ baseEffect }
@@ -208,6 +278,10 @@ func (e *effectRecharge) Affect() bool {
 	e.caster.mana += e.change
 	e.timeLeft--
 	return e.timeLeft < 1
+}
+
+func (e *effectRecharge) Clone() effect {
+	return effect(&effectRecharge{e.baseEffectClone()})
 }
 
 //#############################################################################
@@ -361,11 +435,53 @@ in your puzzle input. What is the least amount of mana you can spend and still
 
 */
 
-type wizardFightSimulator struct {
+const wizardHasNotWon = -1
+
+func leastManaAndWinRec(debug bool, w *wizard, b *boss, least int, playerTurn bool) int {
+	b.applyEffects()
+	w.applyEffects()
+	if b.health < 1 { //win
+		return w.manaSpent
+	}
+	if w.health < 1 { //defeated
+		return wizardHasNotWon
+	}
+	if least > 0 && w.manaSpent > least {
+		//This track isn't better, don't keep spending mana!
+		return wizardHasNotWon
+	}
+
+	recordBestResult := func(possibleBest int) {
+		if possibleBest != wizardHasNotWon && (least < 1 || least > possibleBest) {
+			least = possibleBest
+		}
+	}
+
+	if playerTurn {
+		var gameState = newGameState(b, w)
+		gameState.saveState()
+		castedOnce := false
+		for _, spell := range w.spells {
+			if (*spell).isUsable() {
+				(*spell).cast()
+				recordBestResult(leastManaAndWinRec(debug, w, b, least, false))
+				gameState.revertState() //reverse effects to try selecting spell.
+				castedOnce = true
+			}
+		}
+		if !castedOnce {
+			//Currently of mana for spells, keep going (boss still hits you and may have active effects).
+			recordBestResult(leastManaAndWinRec(debug, w, b, least, false))
+		}
+		return least
+
+	}
+	b.attack(w) //Boss time!
+	return leastManaAndWinRec(debug, w, b, least, true)
+
 }
 
-/*
 func leastManaAndWin(debug bool, w *wizard, b *boss) int {
-
+	least := leastManaAndWinRec(debug, w, b, wizardHasNotWon, true)
+	return least
 }
-*/
