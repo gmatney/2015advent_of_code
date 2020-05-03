@@ -7,11 +7,11 @@ import (
 )
 
 func getType(myvar interface{}) string {
-	if t := reflect.TypeOf(myvar); t.Kind() == reflect.Ptr {
+	var t reflect.Type
+	if t = reflect.TypeOf(myvar); t.Kind() == reflect.Ptr {
 		return "*" + t.Elem().Name()
-	} else {
-		return t.Name()
 	}
+	return t.Name()
 }
 
 func t22CheckSpellUsable(t *testing.T, spell *ispell, shouldBeUsable bool) {
@@ -272,6 +272,7 @@ func TestPuzzleInput22Part1(t *testing.T) {
 	debug := false
 	var w = newWizard(50, 500)
 	var b = newBoss(51, 9)
+	hardMode := false
 	expected := 900
 
 	w.loadSpells(&b)
@@ -280,7 +281,152 @@ func TestPuzzleInput22Part1(t *testing.T) {
 		t.Errorf("spellCount wrong, have %v", spellCount)
 	}
 
-	mana := leastManaAndWin(debug, &w, &b)
+	mana := leastManaAndWin(debug, &w, &b, hardMode)
+	if mana != expected {
+		t.Errorf("leastMana did not match. expected[%v] received[%v]",
+			expected, mana)
+	}
+
+}
+
+func TestGameState(t *testing.T) {
+
+	// Now, suppose the same initial conditions, except that the
+	// boss has 14 hit points instead:
+	var w = newWizard(10, 250)
+	var b = newBoss(14, 8)
+
+	// -- Player turn --
+	// - Player has 10 hit points, 0 armor, 250 mana
+	// - Boss has 14 hit points
+	// Player casts Recharge.
+
+	recharge := getSpellRecharge(&b, &w)
+	t22CheckSpellUsable(t, &recharge, true)
+	t22WizardCheck(t, &w, 10, 0, 250)
+	t22BossCheck(t, &b, 14)
+	recharge.cast()
+
+	var gs gameSave
+	gs = newGameState(&b, &w, nil)
+
+	// -- Boss turn --
+	// - Player has 10 hit points, 0 armor, 21 mana
+	// - Boss has 14 hit points
+	// Recharge provides 101 mana; its timer is now 4.
+	// Boss attacks for 8 damage!
+	gameSaveCheckState := func() {
+		t22WizardCheck(t, &w, 10, 0, 21)
+		t22BossCheck(t, &b, 14)
+		t22EffectTimerCheck(t, &w.baseCharacterStats, effectNameRecharge, 5)
+		if len(w.effects) != 1 {
+			t.Error("Wrong number of Wizard effects")
+		}
+		if len(b.effects) != 0 {
+			t.Error("Wrong number of Boss effects")
+		}
+		if w.manaSpent != 229 {
+			t.Errorf("Wrong number of mana spent %v\n", w.manaSpent)
+		}
+	}
+	gameSaveCheckState()
+	gs.saveState()
+
+	w.applyEffects()
+	b.applyEffects()
+	t22EffectTimerCheck(t, &w.baseCharacterStats, effectNameRecharge, 4)
+
+	b.attack(&w)
+
+	// -- Player turn --
+	// - Player has 2 hit points, 0 armor, 122 mana
+	// - Boss has 14 hit points
+	// Recharge provides 101 mana; its timer is now 3.
+	// Player casts Shield, increasing armor by 7.
+	t22WizardCheck(t, &w, 2, 0, 122)
+	t22BossCheck(t, &b, 14)
+	w.applyEffects()
+	b.applyEffects()
+	t22EffectTimerCheck(t, &w.baseCharacterStats, effectNameRecharge, 3)
+	shield := getSpellShield(&b, &w)
+	t22CheckSpellUsable(t, &shield, true)
+	shield.cast()
+
+	// -- Boss turn --
+	// - Player has 2 hit points, 7 armor, 110 mana
+	// - Boss has 14 hit points
+	// Shield's timer is now 5.
+	// Recharge provides 101 mana; its timer is now 2.
+	// Boss attacks for 8 - 7 = 1 damage!
+	t22WizardCheck(t, &w, 2, 7, 110)
+	t22BossCheck(t, &b, 14)
+	w.applyEffects()
+	b.applyEffects()
+	t22EffectTimerCheck(t, &w.baseCharacterStats, effectNameRecharge, 2)
+	t22EffectTimerCheck(t, &w.baseCharacterStats, effectNameShield, 5)
+	b.attack(&w)
+
+	// -- Player turn --
+	// - Player has 1 hit point, 7 armor, 211 mana
+	// - Boss has 14 hit points
+	// Shield's timer is now 4.
+	// Recharge provides 101 mana; its timer is now 1.
+	// Player casts Drain, dealing 2 damage, and healing 2 hit points.
+	t22WizardCheck(t, &w, 1, 7, 211)
+	t22BossCheck(t, &b, 14)
+	w.applyEffects()
+	b.applyEffects()
+	t22EffectTimerCheck(t, &w.baseCharacterStats, effectNameShield, 4)
+	t22EffectTimerCheck(t, &w.baseCharacterStats, effectNameRecharge, 1)
+	drain := getSpellDrain(&b, &w)
+	t22CheckSpellUsable(t, &drain, true)
+	drain.cast()
+
+	// -- Boss turn --
+	// - Player has 3 hit points, 7 armor, 239 mana
+	// - Boss has 12 hit points
+	t22WizardCheck(t, &w, 3, 7, 239)
+	t22BossCheck(t, &b, 12)
+
+	gs.revertState()
+	gameSaveCheckState()
+
+}
+
+// This is wrong: New best [ 987]: p->d->r->p->s->m->p
+// determine why..
+func TestMadeUp22Part2(t *testing.T) {
+	var w = newWizard(50, 500)
+	var b = newBoss(51, 9)
+	poison := getSpellPoison(&b, &w)
+	drain := getSpellDrain(&b, &w)
+	recharge := getSpellRecharge(&b, &w)
+	shield := getSpellShield(&b, &w)
+	magicMissle := getSpellMagicMissle(&b, &w)
+
+	cost := 3*poison.getManaCost() + drain.getManaCost() + recharge.getManaCost() + magicMissle.getManaCost() + shield.getManaCost()
+	if cost != 987 {
+		t.Errorf("Cost is incorrect, received[%v]", cost)
+	}
+	//Started rewriting simulator to make easier to test simulation
+	// Then realized BUG was allowing mana to drop down below cheapest spell (and either recharge would put back later, or poison killed)
+
+}
+
+func TestPuzzleInput22Part2(t *testing.T) {
+	debug := false
+	var w = newWizard(50, 500)
+	var b = newBoss(51, 9)
+	hardMode := true
+	expected := 1216
+
+	w.loadSpells(&b)
+	spellCount := w.spells
+	if len(spellCount) != 5 {
+		t.Errorf("spellCount wrong, have %v", spellCount)
+	}
+
+	mana := leastManaAndWin(debug, &w, &b, hardMode)
 	if mana != expected {
 		t.Errorf("leastMana did not match. expected[%v] received[%v]",
 			expected, mana)

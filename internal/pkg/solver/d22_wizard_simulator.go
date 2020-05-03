@@ -50,6 +50,26 @@ Effects all work the same way. Effects apply at the start of both the player's t
 You start with 50 hit points and 500 mana points. The boss's actual stats are
 in your puzzle input. What is the least amount of mana you can spend and still
  win the fight? (Do not include mana recharge effects as "spending" negative mana.)
+
+
+
+
+
+--- Part Two ---
+On the next run through the game, you increase the difficulty to hard.
+
+At the start of each player turn (before any other effects apply),
+	you lose 1 hit point. If this brings you to or below 0 hit points, you lose.
+
+With the same starting stats for you and the boss, what is the least amount of
+	 mana you can spend and still win the fight?
+
+Although it hasn't changed, you can still get your puzzle input.
+
+NOTE: had BUG in first part from rules, was submitting answer that was too small.
+	   "You must have enough mana to cast a spell."
+	BUG: Was allowing mana to drop below cheapest spell (still could win with poison or recharge)
+
 */
 
 //#############################################################################
@@ -58,7 +78,7 @@ in your puzzle input. What is the least amount of mana you can spend and still
 
 type baseCharacterStats struct {
 	health  int
-	effects []*effect //Doing in case part 2 allows multiple stacks of same
+	effects []*effect //Did in case part 2 allows multiple stacks of same
 }
 
 func (bcs baseCharacterStats) hasEffect(effectName string) bool {
@@ -152,10 +172,15 @@ type gameSave struct {
 	wizz       *wizard
 	bossMemory boss
 	wizzMemory wizard
+	debugPath  *string
 }
 
-func newGameState(b *boss, w *wizard) gameSave {
-	return gameSave{b, w, boss{}, wizard{}}
+func newGameState(b *boss, w *wizard, debugPath *string) gameSave {
+	if debugPath != nil {
+		s := string(*debugPath)
+		return gameSave{b, w, boss{}, wizard{}, &s}
+	}
+	return gameSave{b, w, boss{}, wizard{}, nil}
 }
 
 func bossStatReplace(source *boss, target *boss) {
@@ -173,6 +198,7 @@ func wizzStatReplace(source *wizard, target *wizard) {
 	target.mana = source.mana
 	target.manaSpent = source.manaSpent
 	target.effects = []*effect{}
+
 	for _, e := range source.effects {
 		var clone = (*e).Clone()
 		target.effects = append(target.effects, &clone)
@@ -183,9 +209,10 @@ func (gs *gameSave) saveState() {
 	bossStatReplace(gs.boss, &gs.bossMemory)
 	wizzStatReplace(gs.wizz, &gs.wizzMemory)
 }
-func (gs *gameSave) revertState() {
+func (gs *gameSave) revertState() *string {
 	bossStatReplace(&gs.bossMemory, gs.boss)
 	wizzStatReplace(&gs.wizzMemory, gs.wizz)
+	return gs.debugPath
 }
 
 //#############################################################################
@@ -290,11 +317,17 @@ func (e *effectRecharge) Clone() effect {
 type ispell interface {
 	isUsable() bool
 	cast()
+	name() string
+	getManaCost() int
 }
 type spellBasics struct {
 	manaCost int
 	enemy    *boss
 	caster   *wizard
+}
+
+func (spell *spellBasics) getManaCost() int {
+	return spell.manaCost
 }
 
 func (spell *spellBasics) hasEnoughMana() bool {
@@ -321,6 +354,9 @@ func (spell *spellMagicMissile) cast() {
 	spell.enemy.health -= spell.damage
 	spell.caster.spendMana(spell.manaCost)
 }
+func (spell *spellMagicMissile) name() string {
+	return "m"
+}
 
 // Drain costs 73 mana. It instantly does 2 damage and heals you for 2 hit points.
 func getSpellDrain(enemy *boss, caster *wizard) ispell {
@@ -344,6 +380,9 @@ func (spell *spellDrain) cast() {
 	spell.enemy.health -= spell.damage
 	spell.caster.health += spell.heal
 	spell.caster.spendMana(spell.manaCost)
+}
+func (spell *spellDrain) name() string {
+	return "d"
 }
 
 // Shield costs 113 mana. It starts an effect that lasts for 6 turns.
@@ -371,6 +410,9 @@ func (spell *spellShield) cast() {
 	spell.caster.effects = append(spell.caster.effects, &e)
 	spell.caster.spendMana(spell.manaCost)
 }
+func (spell *spellShield) name() string {
+	return "s"
+}
 
 // Poison costs 173 mana. It starts an effect that lasts for 6 turns.
 // At the start of each turn while it is active, it deals the boss 3 damage.
@@ -392,6 +434,9 @@ func (spell *spellPoison) cast() {
 	spell.enemy.effects = append(spell.enemy.effects, &e)
 	spell.caster.spendMana(spell.manaCost)
 }
+func (spell *spellPoison) name() string {
+	return "p"
+}
 
 // Recharge costs 229 mana. It starts an effect that lasts for 5 turns. At the
 // start of each turn while it is active, it gives you 101 new mana.
@@ -412,6 +457,9 @@ func (spell *spellRecharge) cast() {
 		enemy: spell.enemy, caster: spell.caster, change: 101}})
 	spell.caster.effects = append(spell.caster.effects, &e)
 	spell.caster.spendMana(spell.manaCost)
+}
+func (spell *spellRecharge) name() string {
+	return "r"
 }
 
 /*
@@ -435,53 +483,127 @@ in your puzzle input. What is the least amount of mana you can spend and still
 
 */
 
-const wizardHasNotWon = -1
+type wizardBattleSimulator struct {
+	debug            bool
+	debugPath        *string
+	w                *wizard
+	b                *boss
+	least            **int // recordBestResultUses *int to determine if result was found.
+	hardMode         bool
+	recordBestResult func(possibleBest int)
+}
 
-func leastManaAndWinRec(debug bool, w *wizard, b *boss, least int, playerTurn bool) int {
-	b.applyEffects()
-	w.applyEffects()
-	if b.health < 1 { //win
-		return w.manaSpent
+//returns if round is over
+func (wz *wizardBattleSimulator) applyTurnEffects(playerTurn bool) bool {
+	if wz.hardMode && playerTurn {
+		wz.w.health--
 	}
-	if w.health < 1 { //defeated
-		return wizardHasNotWon
+	if wz.w.health < 1 { //defeated
+		return true
 	}
-	if least > 0 && w.manaSpent > least {
+	//Effects happen both on player and boss terms.
+	wz.w.applyEffects()  // sheild, recharge
+	wz.b.applyEffects()  // poison
+	if wz.b.health < 1 { //win by toxic effect
+		wz.recordBestResult(wz.w.manaSpent)
+		return true
+	}
+	if *wz.least != nil && wz.w.manaSpent > **wz.least {
 		//This track isn't better, don't keep spending mana!
-		return wizardHasNotWon
+		return true
 	}
+	return false
+}
 
-	recordBestResult := func(possibleBest int) {
-		if possibleBest != wizardHasNotWon && (least < 1 || least > possibleBest) {
-			least = possibleBest
+//returns if fight is over
+func (wz *wizardBattleSimulator) playerPlays(spell *ispell) bool {
+	(*spell).cast()
+	if wz.debug {
+		if *wz.debugPath == "" {
+			*wz.debugPath = (*spell).name()
+		} else {
+			*wz.debugPath = *wz.debugPath + "->" + (*spell).name()
 		}
 	}
+	if wz.b.health < 1 { //Spell immediately killed.
+		wz.recordBestResult(wz.w.manaSpent)
+		return true
+	}
+	return false
+}
 
+// returns if fight is over
+func (wz *wizardBattleSimulator) bossAttacks() bool {
+	wz.b.attack(wz.w)    //Boss time!  (No need to record as only one possibility)
+	if wz.w.health < 1 { //player defeated
+		return true
+	}
+	return false
+}
+
+func (wz *wizardBattleSimulator) leastManaAndWinRec(playerTurn bool) {
+	if wz.applyTurnEffects(playerTurn) {
+		return //Battle over
+	}
 	if playerTurn {
-		var gameState = newGameState(b, w)
+		var gameState = newGameState(wz.b, wz.w, wz.debugPath)
 		gameState.saveState()
-		castedOnce := false
-		for _, spell := range w.spells {
+		var castedOnce bool
+		for _, spell := range wz.w.spells {
 			if (*spell).isUsable() {
-				(*spell).cast()
-				recordBestResult(leastManaAndWinRec(debug, w, b, least, false))
-				gameState.revertState() //reverse effects to try selecting spell.
+				if !wz.playerPlays(spell) {
+					wz.leastManaAndWinRec(false) //Go deeper
+				}
+				*wz.debugPath = *gameState.revertState() //reverse effects to try different spell.
 				castedOnce = true
 			}
 		}
-		if !castedOnce {
-			//Currently of mana for spells, keep going (boss still hits you and may have active effects).
-			recordBestResult(leastManaAndWinRec(debug, w, b, least, false))
+		if !castedOnce { //Currently out of mana for spells
+			//   WRONG -> wz.leastManaAndWinRec(false) (assumed it was okay to be out of mana (recharge might be on))
+			//This was bug... in first part, and why my first quick submission lost.
+			// You must have enough mana to cast a spell.  This is losing path.
 		}
-		return least
+	} else {
+		if !wz.bossAttacks() {
+			wz.leastManaAndWinRec(true)
+		}
 
 	}
-	b.attack(w) //Boss time!
-	return leastManaAndWinRec(debug, w, b, least, true)
 
 }
 
-func leastManaAndWin(debug bool, w *wizard, b *boss) int {
-	least := leastManaAndWinRec(debug, w, b, wizardHasNotWon, true)
-	return least
+func leastManaAndWin(debug bool, w *wizard, b *boss, hardMode bool) int {
+	empty := ""
+	var debugPath = &empty
+	var leastLegit *int
+	var least = &leastLegit
+	recordBestResult := func(possibleBest int) {
+		if *least == nil || **least > possibleBest {
+			if debug {
+				fmt.Printf("New best [%4v]: %v\n", possibleBest, *debugPath)
+			}
+			if *least == nil {
+				var best = possibleBest
+				*least = &best
+			} else {
+				**least = possibleBest
+			}
+		}
+	}
+	simulator := wizardBattleSimulator{
+		debug,
+		debugPath,
+		w,
+		b,
+		least,
+		hardMode,
+		recordBestResult,
+	}
+
+	simulator.leastManaAndWinRec(true)
+	if *simulator.least == nil {
+		return -1 //Can't win
+	}
+
+	return **simulator.least
 }
